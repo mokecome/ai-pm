@@ -178,3 +178,154 @@ class RequirementCoordinator:
         except Exception as e:
             logger.error(f"獲取對話歷史時發生錯誤: {str(e)}")
             return []
+
+    async def extract_requirements(self, chat_history: list) -> Dict[str, Any]:
+        """
+        從對話歷史中提取結構化需求數據
+
+        Args:
+            chat_history: 對話歷史列表 [{"role": "user/assistant", "content": "..."}]
+
+        Returns:
+            結構化的需求字典
+        """
+        try:
+            # 構建完整對話文本
+            conversation_text = ""
+            for msg in chat_history:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                conversation_text += f"{role}: {content}\n\n"
+
+            logger.info("開始從對話歷史中提取結構化需求...")
+
+            # 構建提取提示詞
+            extract_prompt = f"""請從以下對話歷史中提取結構化的產品需求信息，並以 JSON 格式返回。
+
+對話歷史：
+{conversation_text}
+
+請提取以下信息（如果對話中有提到）：
+
+**Stage 0 - 核心問題：**
+- problem_description: 要解決的具體問題
+- pain_level: 痛點程度（1-10分）
+- consequences: 不解決的後果
+
+**Stage 1 - 用戶輪廓：**
+- target_users: 目標用戶描述
+- current_solution: 現有解決方案
+- willingness_to_pay: 付費意願或時間成本
+
+**Stage 2 - 成功定義：**
+- success_criteria: 成功標準
+- measurable_metrics: 可量化的指標
+- mvp_features: MVP 核心功能
+
+請以以下 JSON 格式返回（如果某個信息未提及，該字段填空字串）：
+
+```json
+{{
+  "stage_0": {{
+    "problem_description": "...",
+    "pain_level": "...",
+    "consequences": "..."
+  }},
+  "stage_1": {{
+    "target_users": "...",
+    "current_solution": "...",
+    "willingness_to_pay": "..."
+  }},
+  "stage_2": {{
+    "success_criteria": "...",
+    "measurable_metrics": "...",
+    "mvp_features": "..."
+  }}
+}}
+```
+
+只返回 JSON，不要其他說明文字。"""
+
+            # 使用模型提取數據
+            content = types.Content(
+                role='user',
+                parts=[types.Part(text=extract_prompt)]
+            )
+
+            response = self.model.generate_content(contents=[content])
+            response_text = response.text.strip()
+
+            # 解析 JSON
+            import re
+            import json
+
+            # 嘗試提取 JSON（可能被包在 ```json...``` 中）
+            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response_text)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # 嘗試直接匹配 JSON 對象
+                json_match = re.search(r'\{[\s\S]*\}', response_text)
+                if json_match:
+                    json_str = json_match.group()
+                else:
+                    json_str = response_text
+
+            requirements = json.loads(json_str)
+            logger.info("結構化需求提取成功")
+
+            return requirements
+
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON 解析失敗: {str(e)}")
+            logger.error(f"回應內容: {response_text}")
+            # 返回空結構
+            return {
+                "stage_0": {},
+                "stage_1": {},
+                "stage_2": {}
+            }
+        except Exception as e:
+            logger.error(f"提取結構化需求時發生錯誤: {str(e)}")
+            return {
+                "stage_0": {},
+                "stage_1": {},
+                "stage_2": {}
+            }
+
+    def is_requirements_complete(self, requirements: Dict[str, Any]) -> bool:
+        """
+        檢查需求收集是否完成（至少有4個必填字段）
+
+        必填字段：
+        - problem_description
+        - target_users
+        - measurable_metrics
+        - mvp_features
+
+        Args:
+            requirements: 結構化需求字典
+
+        Returns:
+            True 如果需求足夠完整，False 否則
+        """
+        try:
+            required_fields = [
+                ('stage_0', 'problem_description'),
+                ('stage_1', 'target_users'),
+                ('stage_2', 'measurable_metrics'),
+                ('stage_2', 'mvp_features')
+            ]
+
+            filled_count = 0
+            for stage, field in required_fields:
+                value = requirements.get(stage, {}).get(field, "")
+                if value and value.strip():
+                    filled_count += 1
+
+            logger.info(f"必填字段完成度: {filled_count}/4")
+            return filled_count >= 4
+
+        except Exception as e:
+            logger.error(f"檢查需求完成度時發生錯誤: {str(e)}")
+            return False

@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # 導入 Agents
 from agents.requirement_coordinator import RequirementCoordinator
 from agents.multi_version_generator import MultiVersionGenerator
+from agents.sprint_prd_agent import SprintPRDAgent
+from agents.tdd_prd_agent import TDDPRDAgent
+from agents.bdd_prd_agent import BDDPRDAgent
+from agents.ddd_prd_agent import DDDPRDAgent
 
 # 頁面配置
 st.set_page_config(
@@ -114,6 +118,18 @@ def init_session_state():
     if "prd_check_results" not in st.session_state:
         st.session_state.prd_check_results = None
 
+    # 初始化結構化需求數據
+    if "requirements" not in st.session_state:
+        st.session_state.requirements = {
+            "stage_0": {},
+            "stage_1": {},
+            "stage_2": {}
+        }
+
+    # 初始化需求收集完成狀態（不依賴文字匹配）
+    if "requirements_completed" not in st.session_state:
+        st.session_state.requirements_completed = False
+
     # 初始化當前標籤頁索引
     if "current_tab" not in st.session_state:
         st.session_state.current_tab = 0  # 0: 需求收集, 1: 初版PRD, 2: 多版本PRD
@@ -123,9 +139,9 @@ def init_session_state():
         try:
             st.session_state.coordinator = RequirementCoordinator()
             # 異步初始化 session
-            asyncio.run(st.session_state.coordinator.initialize())
+            run_async(st.session_state.coordinator.initialize())
             # 獲取初始歡迎消息
-            welcome_msg = asyncio.run(st.session_state.coordinator.send_message("開始"))
+            welcome_msg = run_async(st.session_state.coordinator.send_message("開始"))
             st.session_state.chat_history.append({
                 "role": "assistant",
                 "content": welcome_msg
@@ -191,6 +207,31 @@ def display_requirements_guide():
 • 建議：完整回答所有 9 個問題可獲得更專業、更詳細的 PRD
     """)
 
+def run_async(coro):
+    """
+    安全地運行異步協程，處理事件循環衝突
+
+    Args:
+        coro: 異步協程
+
+    Returns:
+        協程的返回值
+    """
+    try:
+        # 嘗試獲取現有事件循環
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 如果循環正在運行，使用 nest_asyncio（Streamlit 環境）
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(coro)
+        else:
+            # 循環未運行，直接使用 asyncio.run
+            return asyncio.run(coro)
+    except RuntimeError:
+        # 沒有事件循環，創建新的
+        return asyncio.run(coro)
+
 async def get_ai_response(user_input: str) -> str:
     """透過 RequirementCoordinator 獲取 AI 回應"""
     try:
@@ -199,6 +240,104 @@ async def get_ai_response(user_input: str) -> str:
     except Exception as e:
         logger.error(f"獲取 AI 回應時發生錯誤: {str(e)}")
         return f"處理過程中發生錯誤: {str(e)}"
+
+async def validate_api_key(api_key: str, api_base: str = None) -> tuple[bool, str]:
+    """
+    驗證 OpenAI API Key 是否有效
+
+    Args:
+        api_key: API Key
+        api_base: API 基礎 URL（可選）
+
+    Returns:
+        (是否有效, 錯誤訊息或成功訊息)
+    """
+    try:
+        from google.adk.models.lite_llm import LiteLlm
+        from google.genai import types
+
+        # 創建測試模型
+        test_model = LiteLlm(
+            model="gpt-4o",
+            api_base=api_base or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            api_key=api_key
+        )
+
+        # 發送簡單的測試請求
+        test_content = types.Content(
+            role='user',
+            parts=[types.Part(text="Hello")]
+        )
+
+        response = test_model.generate_content(contents=[test_content])
+
+        # 如果能獲得回應，說明 API Key 有效
+        if response and response.text:
+            return True, "API Key 驗證成功！"
+        else:
+            return False, "API Key 驗證失敗：無法獲取回應"
+
+    except Exception as e:
+        error_msg = str(e)
+        if "401" in error_msg or "Unauthorized" in error_msg:
+            return False, "API Key 無效：授權失敗"
+        elif "quota" in error_msg.lower():
+            return False, "API Key 配額已用完"
+        elif "timeout" in error_msg.lower():
+            return False, "請求超時：請檢查網絡連接"
+        else:
+            return False, f"驗證失敗：{error_msg}"
+
+async def generate_prd_with_agent(mode: str, requirements: Dict[str, Any]) -> str:
+    """
+    根據選定的開發模式調用對應的 PRD Agent 生成 PRD
+
+    Args:
+        mode: 開發模式字符串（如 "一般開發 (AI-DLC Sprint)"）
+        requirements: 結構化需求字典
+
+    Returns:
+        生成的 PRD 內容
+    """
+    try:
+        logger.info(f"開始使用 {mode} 模式生成 PRD...")
+
+        # 根據模式選擇對應的 Agent
+        if "Sprint" in mode or "一般開發" in mode:
+            agent = SprintPRDAgent()
+            prd = await agent.generate_prd(requirements)
+        elif "TDD" in mode or "測試驅動" in mode:
+            agent = TDDPRDAgent()
+            prd = await agent.generate_prd(requirements)
+        elif "BDD" in mode or "行為驅動" in mode:
+            agent = BDDPRDAgent()
+            prd = await agent.generate_prd(requirements)
+        elif "DDD" in mode or "領域驅動" in mode:
+            agent = DDDPRDAgent()
+            prd = await agent.generate_prd(requirements)
+        else:
+            # 預設使用 Sprint 模式
+            logger.warning(f"未知的開發模式: {mode}，使用預設的 Sprint 模式")
+            agent = SprintPRDAgent()
+            prd = await agent.generate_prd(requirements)
+
+        logger.info(f"PRD 生成完成，長度: {len(prd)} 字符")
+        return prd
+
+    except Exception as e:
+        logger.error(f"生成 PRD 時發生錯誤: {str(e)}")
+        return f"""# 產品需求文檔 (PRD) - {mode}
+
+## 錯誤提示
+生成 PRD 時發生錯誤: {str(e)}
+
+請檢查：
+1. OpenAI API Key 是否正確設置
+2. 網絡連接是否正常
+3. 需求數據是否完整
+
+您可以嘗試重新生成或聯繫技術支援。
+"""
 
 def main():
     """主應用程式"""
@@ -227,9 +366,16 @@ def main():
 
         if api_key:
             if st.button("驗證 API Key"):
-                # TODO: 實際驗證 API Key
-                st.session_state.api_key_validated = True
-                st.success("✅ API Key 驗證成功！")
+                with st.spinner("正在驗證 API Key..."):
+                    is_valid, message = run_async(validate_api_key(api_key))
+                    if is_valid:
+                        st.session_state.api_key_validated = True
+                        st.success(f"✅ {message}")
+                        # 更新環境變數
+                        os.environ["OPENAI_API_KEY"] = api_key
+                    else:
+                        st.session_state.api_key_validated = False
+                        st.error(f"❌ {message}")
 
         st.divider()
 
@@ -273,11 +419,8 @@ def main():
 
         st.divider()
 
-        # 需求收集完成提示（檢測對話中是否包含完成標識）
-        requirements_completed = any("需求收集完成" in msg.get("content", "")
-                                    for msg in st.session_state.chat_history
-                                    if msg.get("role") == "assistant")
-        if requirements_completed:
+        # 需求收集完成提示（使用狀態變量）
+        if st.session_state.requirements_completed:
             st.success("🎉 所有需求收集完成！可以在『初版PRD』標籤查看生成的 PRD。")
 
         # 對話歷史顯示和輸入整合為一個對話框
@@ -321,7 +464,7 @@ def main():
 
             # 透過 coordinator 獲取 AI 回應
             with st.spinner("思考中..."):
-                ai_response = asyncio.run(get_ai_response(message_to_send))
+                ai_response = run_async(get_ai_response(message_to_send))
 
             # 添加 AI 回應到歷史
             st.session_state.chat_history.append({
@@ -344,71 +487,41 @@ def main():
                 # 對話太少，提示用戶
                 st.error("❌ 請至少回答 4 個關鍵問題後再生成 PRD")
             else:
-                # 檢查是否已經完成
-                already_completed = any("需求收集完成" in msg.get("content", "")
-                                       for msg in st.session_state.chat_history
-                                       if msg.get("role") == "assistant")
+                with st.spinner("正在提取結構化需求..."):
+                    # 提取結構化需求
+                    requirements = run_async(
+                        st.session_state.coordinator.extract_requirements(st.session_state.chat_history)
+                    )
+                    st.session_state.requirements = requirements
 
-                if not already_completed:
-                    # 添加完成標記
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": "✅ 需求收集完成！您已回答了足夠的問題。請在側邊欄選擇開發模式，然後前往『初版PRD』標籤生成文檔。"
-                    })
+                    # 檢查是否完整
+                    is_complete = st.session_state.coordinator.is_requirements_complete(requirements)
 
-                # 設置當前標籤為初版PRD（索引 1）
-                st.session_state.current_tab = 1
-
-                # 使用更穩定的 JavaScript 自動切換到初版PRD標籤
-                # 注入 JavaScript 代碼來點擊初版PRD標籤
-                js_code = """
-                <script>
-                    // 使用多種方法確保能找到並點擊標籤
-                    function switchTab() {
-                        // 方法 1: 通過 data-baseweb 屬性
-                        let tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
-                        if (tabs.length > 1) {
-                            tabs[1].click();
-                            return true;
-                        }
-
-                        // 方法 2: 通過 role="tab" 屬性
-                        tabs = window.parent.document.querySelectorAll('button[role="tab"]');
-                        if (tabs.length > 1) {
-                            tabs[1].click();
-                            return true;
-                        }
-
-                        // 方法 3: 通過文字內容查找
-                        const allButtons = window.parent.document.querySelectorAll('button');
-                        for (let btn of allButtons) {
-                            if (btn.textContent.includes('📋 初版PRD') || btn.textContent.includes('初版PRD')) {
-                                btn.click();
-                                return true;
-                            }
-                        }
-
-                        return false;
-                    }
-
-                    // 延遲執行，確保頁面已加載
-                    setTimeout(switchTab, 200);
-                    // 再次嘗試（以防第一次失敗）
-                    setTimeout(switchTab, 500);
-                </script>
-                """
-                st.components.v1.html(js_code, height=0)
+                    if is_complete:
+                        st.session_state.requirements_completed = True
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": "✅ 需求收集完成！已成功提取結構化需求。請在側邊欄選擇開發模式，然後前往『初版PRD』標籤生成文檔。"
+                        })
+                        st.success("🎉 需求收集完成！請點擊上方「📋 初版PRD」標籤查看生成的 PRD。")
+                    else:
+                        st.warning("⚠️ 需求信息不夠完整，建議補充以下必填信息：")
+                        if not requirements.get("stage_0", {}).get("problem_description"):
+                            st.warning("- 要解決的具體問題")
+                        if not requirements.get("stage_1", {}).get("target_users"):
+                            st.warning("- 目標用戶描述")
+                        if not requirements.get("stage_2", {}).get("measurable_metrics"):
+                            st.warning("- 可量化的指標")
+                        if not requirements.get("stage_2", {}).get("mvp_features"):
+                            st.warning("- MVP 核心功能")
 
                 st.rerun()
 
     with tab2:
         st.header("📋 初版PRD")
 
-        # 檢查是否有對話歷史（判斷需求收集是否進行中）
-        # 通過檢測對話中是否包含「✅ 需求收集完成」來判斷是否完成
-        requirements_completed = any("需求收集完成" in msg.get("content", "")
-                                    for msg in st.session_state.chat_history
-                                    if msg.get("role") == "assistant")
+        # 使用狀態變量而不是文字匹配
+        requirements_completed = st.session_state.requirements_completed
 
         # 顯示狀態提示
         col1, col2 = st.columns(2)
@@ -429,29 +542,12 @@ def main():
         # 自動生成 PRD（如果條件滿足且還沒有生成）
         if requirements_completed and st.session_state.selected_mode and not st.session_state.current_prd:
             with st.spinner(f"正在根據 {st.session_state.selected_mode} 模式生成 PRD..."):
-                # TODO: 調用實際的 PRD 生成 Agent
-                # 這裡先使用模擬內容（後續會整合實際 PRD Agent）
-                mode_name = st.session_state.selected_mode.split(" ")[0]  # 提取模式名稱
-                st.session_state.current_prd = f"""# 產品需求文檔 (PRD) - {st.session_state.selected_mode}
-
-## 1. 產品概述
-【根據對話歷史生成...】
-
-## 2. 核心需求
-【根據對話歷史生成...】
-
-## 3. MVP 功能
-【根據對話歷史生成...】
-
-## 4. 開發計劃（{mode_name} 模式）
-【根據選定的開發模式生成...】
-
-## 5. 預期效益
-【根據對話歷史生成...】
-
----
-*此 PRD 由 AI-PM 根據 {st.session_state.selected_mode} 模式自動生成*
-"""
+                # 實際調用對應的 PRD Agent
+                prd_content = run_async(generate_prd_with_agent(
+                    st.session_state.selected_mode,
+                    st.session_state.requirements
+                ))
+                st.session_state.current_prd = prd_content
                 st.rerun()
 
         # 顯示提示訊息（如果條件不滿足）
@@ -625,54 +721,12 @@ PRD 內容：
                 with st.spinner("🚀 正在生成三個版本的 PRD..."):
                     # 調用 MultiVersionGenerator
                     generator = MultiVersionGenerator()
-                    versions = asyncio.run(generator.generate_versions(st.session_state.current_prd))
+                    versions = run_async(generator.generate_versions(st.session_state.current_prd))
 
                     # 保存到 session state
                     st.session_state.version_comparison = versions
 
-                    # 設置當前標籤為多版本PRD（第三個標籤）
-                    st.session_state.current_tab = 2
-
-                    # JavaScript 跳轉到第三個標籤
-                    js_code = """
-                    <script>
-                        // 使用多種方法確保能找到並點擊標籤
-                        function switchTab() {
-                            // 方法 1: 通過 data-baseweb 屬性
-                            let tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
-                            if (tabs.length > 2) {
-                                tabs[2].click();
-                                return true;
-                            }
-
-                            // 方法 2: 通過 role="tab" 屬性
-                            tabs = window.parent.document.querySelectorAll('button[role="tab"]');
-                            if (tabs.length > 2) {
-                                tabs[2].click();
-                                return true;
-                            }
-
-                            // 方法 3: 通過文字內容查找
-                            const allButtons = window.parent.document.querySelectorAll('button');
-                            for (let btn of allButtons) {
-                                if (btn.textContent.includes('📊 多版本PRD') || btn.textContent.includes('多版本PRD')) {
-                                    btn.click();
-                                    return true;
-                                }
-                            }
-
-                            return false;
-                        }
-
-                        // 延遲執行，確保頁面已加載
-                        setTimeout(switchTab, 200);
-                        // 再次嘗試（以防第一次失敗）
-                        setTimeout(switchTab, 500);
-                    </script>
-                    """
-                    st.components.v1.html(js_code, height=0)
-
-                    st.success("✅ 三版本 PRD 生成完成！正在跳轉...")
+                    st.success("✅ 三版本 PRD 生成完成！請點擊上方「📊 多版本PRD」標籤查看結果。")
                     st.rerun()
 
         # AI升級檢查表按鈕邏輯
@@ -965,7 +1019,7 @@ AI 友善要素：
                     with st.spinner("正在生成三個版本的 PRD..."):
                         # 調用 MultiVersionGenerator
                         generator = MultiVersionGenerator()
-                        versions = asyncio.run(generator.generate_versions(st.session_state.current_prd))
+                        versions = run_async(generator.generate_versions(st.session_state.current_prd))
                         st.session_state.version_comparison = versions
                         st.success("✅ 三版本 PRD 生成完成！")
                         st.rerun()
