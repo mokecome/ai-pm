@@ -1,26 +1,20 @@
 # Core AI and LLM dependencies
 litellm>=1.40.0
 google-adk>=0.1.0
+google-generativeai>=0.3.0
 
-# Web framework dependencies (Streamlit replaces Gradio/FastAPI)
+# Web framework dependencies
 streamlit>=1.28.0
-streamlit-chat>=0.1.1
 
 # Environment and configuration
 python-dotenv>=1.0.0
 
-# Async and concurrency
-asyncio-timeout>=4.0.0
-
-# Type hints (included in Python 3.5+, but explicit for older versions)
+# Type hints (Python 3.5+)
 typing-extensions>=4.0.0
 
-# Data handling and export
-pandas>=1.5.0
-openpyxl>=3.0.0
-
-# Standard library dependencies (usually included with Python)
+# Standard library dependencies (built-in with Python)
 # asyncio - built-in
+# asyncio.timeout - built-in (Python 3.11+)
 # concurrent.futures - built-in
 # json - built-in
 # logging - built-in
@@ -28,7 +22,11 @@ openpyxl>=3.0.0
 # queue - built-in
 # threading - built-in
 
-# Removed dependencies (no longer needed)
+# Removed dependencies (no longer needed or unused)
+# streamlit-chat>=0.1.1  # Not used in current implementation
+# pandas>=1.5.0  # Not used in current implementation
+# openpyxl>=3.0.0  # Not used in current implementation
+# asyncio-timeout>=4.0.0  # Built-in with Python 3.11+
 # gradio>=4.0.0  # Replaced by Streamlit
 # fastapi>=0.100.0  # Not needed for Streamlit app
 # uvicorn[standard]>=0.23.0  # Not needed for Streamlit app
