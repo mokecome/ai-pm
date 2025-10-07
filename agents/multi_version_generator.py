@@ -5,6 +5,7 @@ Multi-Version PRD Generator - 多版本 PRD 生成器
 """
 
 import os
+import re
 import asyncio
 from typing import Dict, Any, Optional
 from google.adk.agents import LlmAgent
@@ -249,64 +250,44 @@ class MultiVersionGenerator:
             "comparison": None
         }
 
-        # 簡單的解析策略：按照標題分割
-        # 這裡使用基本的字符串分割，實際可以更智能
-        sections = response_text.split("# ")
+        if not response_text:
+            return result
 
-        mvp_found = False
-        standard_found = False
-        ideal_found = False
+        # 尋找頂級標題區段，避免破壞 Markdown 層級
+        headings = list(re.finditer(r'(?m)^#\s+.*$', response_text))
 
-        current_section = ""
-        for section in sections:
-            if section.strip():
-                # 判斷是哪個版本
-                if "MVP" in section[:50] or "mvp" in section[:50].lower():
-                    mvp_found = True
-                    standard_found = False
-                    ideal_found = False
-                    result["mvp"] = "# " + section.strip()
-                elif "標準版" in section[:50] or "standard" in section[:50].lower():
-                    mvp_found = False
-                    standard_found = True
-                    ideal_found = False
-                    result["standard"] = "# " + section.strip()
-                elif "理想版" in section[:50] or "ideal" in section[:50].lower():
-                    mvp_found = False
-                    standard_found = False
-                    ideal_found = True
-                    result["ideal"] = "# " + section.strip()
-                elif mvp_found:
-                    result["mvp"] += "\n# " + section.strip()
-                elif standard_found:
-                    result["standard"] += "\n# " + section.strip()
-                elif ideal_found:
-                    result["ideal"] += "\n# " + section.strip()
+        for index, match in enumerate(headings):
+            heading_line = match.group(0)
+            start = match.start()
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(response_text)
+            section_text = response_text[start:end].strip()
+            heading_lower = heading_line.lower()
 
-        # 如果解析失敗，返回完整文本
-        if not result["mvp"] and not result["standard"] and not result["ideal"]:
-            # 嘗試更簡單的分割方式
-            parts = response_text.split("\n\n")
-            if len(parts) >= 3:
-                result["mvp"] = "\n\n".join(parts[:len(parts)//3])
-                result["standard"] = "\n\n".join(parts[len(parts)//3:2*len(parts)//3])
-                result["ideal"] = "\n\n".join(parts[2*len(parts)//3:])
-            else:
-                # 最後的備用方案：全部返回相同內容
-                result["mvp"] = response_text
-                result["standard"] = response_text
-                result["ideal"] = response_text
+            if "mvp" in heading_lower:
+                result["mvp"] = section_text
+            elif "標準" in heading_line or "standard" in heading_lower:
+                result["standard"] = section_text
+            elif "理想" in heading_line or "ideal" in heading_lower:
+                result["ideal"] = section_text
+            elif "比較" in heading_line or "comparison" in heading_lower:
+                result["comparison"] = section_text
 
-        # 嘗試提取比較表格（如果存在）
-        if "|" in response_text and "比較項目" in response_text:
-            # 找到表格部分
-            table_start = response_text.find("| 比較項目")
-            if table_start == -1:
-                table_start = response_text.find("|比較項目")
-            if table_start != -1:
-                table_end = response_text.find("\n\n", table_start)
-                if table_end == -1:
-                    table_end = len(response_text)
-                result["comparison"] = response_text[table_start:table_end].strip()
+        # 如果仍未取到內容，回退到整體文本
+        fallback_text = response_text.strip()
+        if not result["mvp"]:
+            result["mvp"] = fallback_text
+        if not result["standard"]:
+            result["standard"] = fallback_text
+        if not result["ideal"]:
+            result["ideal"] = fallback_text
+
+        # 提取比較表格（若存在）
+        if not result["comparison"]:
+            table_match = re.search(
+                r'(\|[^\n]*比較項目[^\n]*\|\n(?:\|.*\|\n?)+)',
+                response_text
+            )
+            if table_match:
+                result["comparison"] = table_match.group(1).strip()
 
         return result
