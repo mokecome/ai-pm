@@ -115,6 +115,10 @@ def init_session_state():
     if "api_key_validated" not in st.session_state:
         st.session_state.api_key_validated = False
 
+    # 初始化用戶輸入的 API Key
+    if "user_api_key" not in st.session_state:
+        st.session_state.user_api_key = os.getenv("OPENAI_API_KEY", "")
+
     if "prd_check_results" not in st.session_state:
         st.session_state.prd_check_results = None
 
@@ -358,24 +362,66 @@ def main():
 
         # API Key 管理
         st.subheader("OpenAI API Key")
-        api_key = st.text_input(
-            "輸入您的 API Key",
-            type="password",
-            help="可選：使用您自己的 API Key，否則使用預設設置"
-        )
 
-        if api_key:
-            if st.button("驗證 API Key"):
-                with st.spinner("正在驗證 API Key..."):
-                    is_valid, message = run_async(validate_api_key(api_key))
-                    if is_valid:
-                        st.session_state.api_key_validated = True
-                        st.success(f"✅ {message}")
-                        # 更新環境變數
-                        os.environ["OPENAI_API_KEY"] = api_key
-                    else:
-                        st.session_state.api_key_validated = False
-                        st.error(f"❌ {message}")
+        # 如果已有 API Key，顯示狀態和操作按鈕
+        if st.session_state.user_api_key:
+            # 顯示部分 API Key（前 7 字符...後 4 字符）
+            key = st.session_state.user_api_key
+            if len(key) > 15:
+                display_key = f"{key[:7]}...{key[-4:]}"
+            else:
+                display_key = f"{key[:4]}***"
+
+            st.success(f"✅ 已設置：{display_key}")
+
+            # 操作按鈕
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("🔄 更換", use_container_width=True, key="change_api_key"):
+                    st.session_state.user_api_key = ""
+                    st.session_state.api_key_validated = False
+                    st.rerun()
+
+            with col2:
+                if st.button("✅ 驗證", use_container_width=True, key="verify_api_key"):
+                    with st.spinner("驗證中..."):
+                        is_valid, message = run_async(validate_api_key(st.session_state.user_api_key))
+                        if is_valid:
+                            st.session_state.api_key_validated = True
+                            os.environ["OPENAI_API_KEY"] = st.session_state.user_api_key
+                            st.success(message)
+                        else:
+                            st.session_state.api_key_validated = False
+                            st.error(message)
+
+        else:
+            # 顯示輸入框
+            st.info("💡 請輸入您的 OpenAI API Key")
+
+            new_api_key = st.text_input(
+                "輸入 API Key",
+                type="password",
+                placeholder="sk-...",
+                help="輸入完成後點擊下方按鈕保存",
+                label_visibility="collapsed",
+                key="new_api_key_input"
+            )
+
+            if st.button("💾 保存", type="primary", use_container_width=True, key="save_api_key"):
+                if new_api_key and new_api_key.strip():
+                    # 保存並驗證
+                    with st.spinner("正在驗證 API Key..."):
+                        is_valid, message = run_async(validate_api_key(new_api_key.strip()))
+                        if is_valid:
+                            st.session_state.user_api_key = new_api_key.strip()
+                            st.session_state.api_key_validated = True
+                            os.environ["OPENAI_API_KEY"] = new_api_key.strip()
+                            st.success(f"✅ {message}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+                else:
+                    st.warning("⚠️ 請輸入 API Key")
 
         st.divider()
 
